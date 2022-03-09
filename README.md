@@ -1,5 +1,5 @@
 # Reknit
-A SysVinit-based init system for the Cynosure 2 kernel
+A SysVinit-inspired init system for the Cynosure 2 kernel
 
 # Using Reknit
 Simply copy `init.lua` into anywhere on your filesystem that have Cynosure 2 installed, preferably in `/sbin/init.lua`, and pass the parameter `init=path/to/init.lua` to the kernel.
