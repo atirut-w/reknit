@@ -63,8 +63,8 @@ do
         action = action,
         command = command
       }
-      for runlevel in runlevels:gmatch("%d+") do
-        entry.runlevels[runlevel] = true
+      for runlevel in runlevels:gmatch("%d") do
+        entry.runlevels[tonumber(runlevel)] = true
       end
       table.insert(init_entries, entry)
     end
