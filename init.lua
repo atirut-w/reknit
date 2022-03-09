@@ -86,10 +86,7 @@ for _, entry in ipairs(init_entries) do
     table.insert(watchlist, watch)
   else
     printf("Unknown action for '%s': %s\n", entry.id, entry.action)
-    goto continue
   end
-
-  ::continue::
 end
 
 while true do
