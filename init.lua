@@ -14,98 +14,135 @@ local function printf(fmt, ...)
   syscall("write", 1, string.format(fmt, ...))
 end
 
---- Fork a new process and execute a command
----@param command string
+--- Execute a command
+---@param cmd string
 ---@return integer
-local function exec(command)
-  local pid = syscall("fork", function()
+local function exec(cmd)
+  local pid, errno = syscall("fork", function()
     local _, errno = syscall("execve", "/bin/sh.lua", {
       "/bin/sh.lua",
       "-c",
-      command,
+      cmd
     })
     if errno then
-      printf("Cannot execute %s: %s\n", command, tostring(errno))
+      printf("execve failed: %d\n", errno)
+      syscall("exit", 1)
     end
   end)
-  return pid
+  if not pid then
+    printf("fork failed: %d\n", errno)
+    return nil, errno
+  else
+    return pid
+  end
 end
 
 ---@class InitEntry
 ---@field id string
----@field runlevels integer[]
+---@field runlevels boolean[]
 ---@field action string
 ---@field command string
 
----@class WatchEntry
----@field entry InitEntry
----@field pid integer
-
 ---@type InitEntry[]
-local init_entries = {}
----@type WatchEntry[]
-local watchlist = {}
+local init_table = {}
 
-do
+--- Load `/etc/inittab`
+local function load_inittab()
   local fd, errno = syscall("open", "/etc/inittab", "r")
   if not fd then
-    printf("Failed to open /etc/inittab: %s\n", errno)
-    syscall("exit", 1)
+    printf("Could not open /etc/inittab: %s\n", (
+      (errno == 2 and "No such file or directory") or
+      tostring(errno)
+    ))
+    return
   end
-  ---@type string
-  local content = syscall("read", fd, "a")
+  local inittab = syscall("read", fd, "a")
   syscall("close", fd)
 
-  for line in content:gmatch("[^\r\n]+") do
-    if line:sub(1, 1) == ":" then goto continue end
+  init_table = {}
 
-    local id, runlevels, action, command = line:match("^([^:]+):([^:]+):([^:]+):(.+)$")
-    if id and runlevels and action and command then
-      local entry = {
-        id = id,
-        runlevels = {},
-        action = action,
-        command = command
-      }
-      for runlevel in runlevels:gmatch("%d") do
-        entry.runlevels[tonumber(runlevel)] = true
+  for line in inittab:gmatch("[^\r\n]+") do
+    if line:sub(1,1) == ":" then
+      -- Comment
+    elseif line == "" then
+      -- Empty line
+    else
+      local id, runlevels, action, command = line:match("^([^:]+):([^:]+):([^:]+):(.+)$")
+      if not id then
+        printf("Bad init entry on line %d\n", line)
+      else
+        local entry = {
+          id = id,
+          runlevels = {},
+          action = action,
+          command = command,
+        }
+        for runlevel in runlevels:gmatch("%d") do
+          entry.runlevels[tonumber(runlevel)] = true
+        end
+        init_table[#init_table + 1] = entry
       end
-      table.insert(init_entries, entry)
     end
-
-    ::continue::
   end
 end
 
-for _, entry in ipairs(init_entries) do
-  if entry.action == "once" then
-    exec(entry.command, {
-      "/bin/sh",
-      "-c",
-      entry.command
-    })
-  elseif entry.action == "wait" then
-    syscall("wait", exec(entry.command))
-  elseif entry.action == "respawn" then
-    local watch = {
-      entry = entry,
-      pid = exec(entry.command)
-    }
-    table.insert(watchlist, watch)
-  else
-    printf("Unknown action for '%s': %s\n", entry.id, entry.action)
+load_inittab()
+
+--- List of active init entries with their PID as key
+---@type InitEntry[]
+local active_entries = {}
+--- List of init entries to watch for respawn
+---@type InitEntry[]
+local respawn_entries = {}
+--- Cynosure doesn't seem to have IPC yet so this will have to do for now
+---@type integer[]
+local telinit = {}
+
+--- Switch to a new runlevel
+---@param runlevel integer
+local function switch_runlevel(runlevel)
+  for pid, entry in pairs(active_entries) do
+    if not entry.runlevels[runlevel] then
+      printf("Would like to kill %d but the kill syscall is not implemented yet. :(\n", pid)
+    end
+  end
+
+  for i, entry in pairs(init_table) do
+    if entry.runlevels[runlevel] then
+      if entry.command:sub(1, #"telinit ") == "telinit " then
+        table.insert(telinit, tonumber(entry.command:sub(#"telinit " + 1)))
+      else
+        local pid, errno = exec(entry.command)
+  
+        if not pid then
+          printf("Could not fork for entry %s: %d\n", entry.id, errno)
+        elseif entry.action == "once" then
+          active_entries[pid] = entry
+        elseif entry.action == "wait" then
+          syscall("wait", pid)
+        elseif entry.action == "respawn" then
+          respawn_entries[pid] = entry
+        end
+      end
+    end
   end
 end
+
+switch_runlevel(1) -- Single user mode
 
 while true do
-  local sig, pid = coroutine.yield(0)
+  local sig, id = coroutine.yield(0)
 
-  if sig == "process_exit" then
-    for _, watch in ipairs(watchlist) do
-      if watch.pid == pid then
-        watch.pid = exec(watch.entry.command)
-        break
-      end
+  if sig == "process_exit" and respawn_entries[id] then
+    local entry = respawn_entries[id]
+    respawn_entries[id] = nil
+    local pid, errno = exec(entry.command)
+    if not pid then
+      printf("Could not fork for entry %s: %d\n", entry.id, errno)
+    else
+      active_entries[pid] = entry
     end
+  elseif #telinit > 0 then
+    switch_runlevel(table.remove(telinit, 1))
   end
 end
