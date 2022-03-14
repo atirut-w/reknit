@@ -14,14 +14,18 @@ local function printf(fmt, ...)
   syscall("write", 1, string.format(fmt, ...))
 end
 
---- Fork a new process and execute an executable
----@param path string
+--- Fork a new process and execute a command
+---@param command string
 ---@return integer
-local function exec(path)
+local function exec(command)
   local pid = syscall("fork", function()
-    local _, errno = syscall("execve", path, {}, {})
+    local _, errno = syscall("execve", "/bin/sh.lua", {
+      "/bin/sh.lua",
+      "-c",
+      command,
+    })
     if errno then
-      printf("Could not execute %s: %d\n", path, errno)
+      printf("Cannot execute %s: %s\n", command, tostring(errno))
     end
   end)
   return pid
@@ -75,7 +79,11 @@ end
 
 for _, entry in ipairs(init_entries) do
   if entry.action == "once" then
-    exec(entry.command)
+    exec(entry.command, {
+      "/bin/sh",
+      "-c",
+      entry.command
+    })
   elseif entry.action == "wait" then
     syscall("wait", exec(entry.command))
   elseif entry.action == "respawn" then
