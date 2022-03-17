@@ -135,8 +135,10 @@ while true do
 
   if sig == "process_exit" and respawn_entries[id] then
     local entry = respawn_entries[id]
+
     respawn_entries[id] = nil
     active_entries[id] = nil
+
     local pid, errno = exec(entry.command)
     if not pid then
       printf("Could not fork for entry %s: %d\n", entry.id, errno)
