@@ -82,7 +82,9 @@ local function load_inittab()
         for runlevel in runlevels:gmatch("%d") do
           entry.runlevels[tonumber(runlevel)] = true
         end
+        entry.index = #init_table + 1
         init_table[#init_table + 1] = entry
+        init_table[entry.id] = entry -- for 'start' and 'stop'
       end
     end
   end
@@ -102,30 +104,53 @@ local telinit = {}
 
 local Runlevel = -1
 
+--- Start a service described by that entry
+---@param entry InitEntry
+local function start_service(entry)
+  local pid, errno = exec(entry.command)
+
+  if not pid then
+    printf("Could not fork for entry %s: %d\n", entry.id, errno)
+  elseif entry.action == "once" then
+    active_entries[pid] = entry
+  elseif entry.action == "wait" then
+    syscall("wait", pid)
+  elseif entry.action == "respawn" then
+    respawn_entries[pid] = entry
+  end
+
+  -- for 'stop'
+  active_entries[entry.id] = pid
+end
+
+--- Stop a service described by that entry
+---@param entry InitEntry
+local function stop_service(entry)
+  local pid = active_entries[entry.id]
+  if pid then
+    if syscall("kill", pid, "SIGTERM") then
+      active_entries[pid] = nil
+      respawn_entries[pid] = nil
+      active_entries[entry.id] = nil
+    end
+  end
+end
+
 --- Switch to a new runlevel
 ---@param runlevel integer
 local function switch_runlevel(runlevel)
   Runlevel = runlevel
-  for pid, entry in pairs(active_entries) do
-    if not entry.runlevels[runlevel] then
-      syscall("kill", pid, "SIGTERM")
-      active_entries[pid] = nil
+  for id, entry in pairs(active_entries) do
+    if type(id) == "string" then
+      if not entry.runlevels[runlevel] then
+        stop_service(entry)
+      end
     end
   end
 
   for i, entry in pairs(init_table) do
     if entry.runlevels[runlevel] then
-      local pid, errno = exec(entry.command)
-
-      if not pid then
-        printf("Could not fork for entry %s: %d\n", entry.id, errno)
-      elseif entry.action == "once" then
-        active_entries[pid] = entry
-      elseif entry.action == "wait" then
-        syscall("wait", pid)
-      elseif entry.action == "respawn" then
-        respawn_entries[pid] = entry
-      end
+      start_service(entry)
     end
   end
 end
