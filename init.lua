@@ -96,35 +96,35 @@ local active_entries = {}
 --- List of init entries to watch for respawn
 ---@type InitEntry[]
 local respawn_entries = {}
---- Cynosure doesn't seem to have IPC yet so this will have to do for now
+--- A buffer of IPC entries, in case a lot of them get sent at once.
 ---@type integer[]
 local telinit = {}
+
+local Runlevel = -1
 
 --- Switch to a new runlevel
 ---@param runlevel integer
 local function switch_runlevel(runlevel)
+  Runlevel = runlevel
   for pid, entry in pairs(active_entries) do
     if not entry.runlevels[runlevel] then
-      printf("Would like to kill %d but the kill syscall is not implemented yet. :(\n", pid)
+      syscall("kill", pid, "SIGTERM")
+      active_entries[pid] = nil
     end
   end
 
   for i, entry in pairs(init_table) do
     if entry.runlevels[runlevel] then
-      if entry.command:sub(1, #"telinit ") == "telinit " then
-        table.insert(telinit, tonumber(entry.command:sub(#"telinit " + 1)))
-      else
-        local pid, errno = exec(entry.command)
-  
-        if not pid then
-          printf("Could not fork for entry %s: %d\n", entry.id, errno)
-        elseif entry.action == "once" then
-          active_entries[pid] = entry
-        elseif entry.action == "wait" then
-          syscall("wait", pid)
-        elseif entry.action == "respawn" then
-          respawn_entries[pid] = entry
-        end
+      local pid, errno = exec(entry.command)
+
+      if not pid then
+        printf("Could not fork for entry %s: %d\n", entry.id, errno)
+      elseif entry.action == "once" then
+        active_entries[pid] = entry
+      elseif entry.action == "wait" then
+        syscall("wait", pid)
+      elseif entry.action == "respawn" then
+        respawn_entries[pid] = entry
       end
     end
   end
@@ -132,8 +132,22 @@ end
 
 switch_runlevel(1) -- Single user mode
 
+local valid_actions = {
+  runlevel = true,
+  start = true,
+  stop = true,
+  status = true,
+}
+
+local evt, err = syscall("open", "/proc/events", "rw")
+if not evt then
+  -- The weird formatting here is so it'll fit into 80 character lines.
+  printf("init: \27[91mWARNING: Failed to open /proc/events (%d) - %s",
+    err, "telinit responses will not work\27[m\n")
+end
+
 while true do
-  local sig, id = coroutine.yield(0)
+  local sig, id, req, a = coroutine.yield()
 
   if sig == "process_exit" and respawn_entries[id] then
     local entry = respawn_entries[id]
@@ -143,12 +157,37 @@ while true do
 
     local pid, errno = exec(entry.command)
     if not pid then
-      printf("Could not fork for entry %s: %d\n", entry.id, errno)
+      printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
     else
       active_entries[pid] = entry
       respawn_entries[pid] = entry
     end
-  elseif #telinit > 0 then
-    switch_runlevel(table.remove(telinit, 1))
+  elseif sig == "telinit" then
+    if type(id) ~= "number" then
+      printf("init: Cannot respond to non-numeric PID %s\n", tostring(id))
+    elseif not syscall("kill", id, "SIGEXIST") then
+      printf("init: Cannot respond to nonexistent process %d\n", id)
+    elseif type(req) ~= "string" or not valid_actions[req] then
+      printf("init: Got bad telinit %s\n", tostring(req))
+    else
+      if req == "runlevel" and arg and type(arg) ~= "number" then
+        printf("init: Got bad runlevel argument %s\n", tostring(arg))
+      elseif req ~= "runlevel" and type(arg) ~= "string" then
+        printf("init: Got bad %s argument %s\n", req, tostring(arg))
+      else
+        telinit[#telinit+1] = {req = req, from = id, arg = a}
+      end
+    end
+  end
+
+  if #telinit > 0 then
+    local request = table.remove(telinit, 1)
+    if request == "runlevel" then
+      if not request.arg then
+        syscall("ioctl", evt, "send", request.to, "runlevel", Runlevel)
+      else
+        switch_runlevel(request.arg)
+      end
+    end
   end
 end
