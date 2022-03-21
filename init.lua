@@ -213,6 +213,14 @@ while true do
       else
         switch_runlevel(request.arg)
       end
+    elseif request == "start" then
+      if active_entries[request.arg] then
+        start_service(active_entries[request.arg])
+      end
+    elseif request == "stop" then
+      if active_entries[request.arg] then
+        stop_service(active_entries[request.arg])
+      end
     end
   end
 end
