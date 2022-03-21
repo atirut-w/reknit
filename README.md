@@ -23,7 +23,7 @@ shell:0:respawn:/bin/sh.lua
 ```
 
 - `id` can be however long you want. At the moment, it is not used.
-- `runlevels` is a number where each digit indicates at what level the action should be executed.
+- `runlevels` is a number where each digit indicates at what level(s) the action should be executed.  It can be `0123456789` or if it is not a number Reknit will only start it when instructed to.
 - `action` defines the behaviour of the service. At the moment, 3 actions are supported:
   - `once`: the service will be executed only once without Reknit waiting for it to finish.
   - `wait`: the service will be executed and Reknit will wait for it to finish.

@@ -111,6 +111,7 @@ local function start_service(entry)
 
   if not pid then
     printf("Could not fork for entry %s: %d\n", entry.id, errno)
+    return nil, errno
   elseif entry.action == "once" then
     active_entries[pid] = entry
   elseif entry.action == "wait" then
@@ -121,6 +122,8 @@ local function start_service(entry)
 
   -- for 'stop'
   active_entries[entry.id] = pid
+
+  return true
 end
 
 --- Stop a service described by that entry
@@ -132,6 +135,7 @@ local function stop_service(entry)
       active_entries[pid] = nil
       respawn_entries[pid] = nil
       active_entries[entry.id] = nil
+      return true
     end
   end
 end
@@ -209,17 +213,22 @@ while true do
     local request = table.remove(telinit, 1)
     if request == "runlevel" then
       if not request.arg then
-        syscall("ioctl", evt, "send", request.to, "runlevel", Runlevel)
-      else
+        syscall("ioctl", evt, "send", request.from, "response", "runlevel",
+          Runlevel)
+      elseif request.arg ~= Runlevel then
         switch_runlevel(request.arg)
+        syscall("ioctl", evt, "send", request.from, "response", "runlevel",
+          true)
       end
     elseif request == "start" then
       if active_entries[request.arg] then
-        start_service(active_entries[request.arg])
+        syscall("ioctl", evt, "send", request.from, "response", "start",
+          start_service(active_entries[request.arg]))
       end
     elseif request == "stop" then
       if active_entries[request.arg] then
-        stop_service(active_entries[request.arg])
+        syscall("ioctl", evt, "send", request.from, "response", "stop",
+          stop_service(active_entries[request.arg]))
       end
     end
   end
