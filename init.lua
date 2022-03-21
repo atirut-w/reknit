@@ -5,7 +5,9 @@
 ---@param call string
 ---@vararg any
 local function syscall(call, ...)
-  return coroutine.yield("syscall", call, ...)
+  local result, err = coroutine.yield("syscall", call, ...)
+  if type(err) == "string" then error(err) end
+  return result, err
 end
 
 ---@param fmt string
