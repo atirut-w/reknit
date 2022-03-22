@@ -39,6 +39,47 @@ local function exec(cmd)
   end
 end
 
+-- Load a script and execute it with Reknit's environment.
+-- Only used internally, mostly for security reasons.
+local function exec_script(file)
+  local okay, emsg
+  if dofile then
+    pcall(dofile, file)
+  else
+    local fd, err = syscall("open", file, "r")
+    if not fd then
+      printf("open '%s' failed: %d\n", file, err)
+      return nil, err
+    end
+
+    local data = syscall("read", fd, "a")
+    syscall("close", fd)
+
+    local ok, lerr = load(data, "="..file, "t", _G)
+    if not ok then
+      printf("Load failed - %s\n", lerr)
+      return
+    else
+      okay, emsg = pcall(ok)
+    end
+  end
+
+  if not okay and emsg then
+    printf("Execution failed - %s\n", emsg)
+    return
+  end
+
+  return true
+end
+
+-- Load /lib/package.lua - because where else do you do it?
+-- Environments propagate to process children in certain
+-- Cynosure configurations, and this is the only real way to
+-- ensure that every process has access to the 'package' library.
+--
+-- This may change in the future.
+assert(exec_script("/lib/package.lua"))
+
 ---@class InitEntry
 ---@field id string
 ---@field runlevels boolean[]
