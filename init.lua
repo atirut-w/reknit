@@ -27,12 +27,12 @@ local function exec(cmd)
       cmd
     })
     if errno then
-      printf("execve failed: %d\n", errno)
+      printf("init: execve failed: %d\n", errno)
       syscall("exit", 1)
     end
   end)
   if not pid then
-    printf("fork failed: %d\n", errno)
+    printf("init: fork failed: %d\n", errno)
     return nil, errno
   else
     return pid
@@ -148,10 +148,12 @@ local Runlevel = -1
 --- Start a service described by that entry
 ---@param entry InitEntry
 local function start_service(entry)
+  if active_entries[entry.id] then return true end
+  printf("init: Starting '%s'\n", entry.id)
   local pid, errno = exec(entry.command)
 
   if not pid then
-    printf("Could not fork for entry %s: %d\n", entry.id, errno)
+    printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
     return nil, errno
   elseif entry.action == "once" then
     active_entries[pid] = entry
@@ -184,6 +186,7 @@ end
 --- Switch to a new runlevel
 ---@param runlevel integer
 local function switch_runlevel(runlevel)
+  printf("init: Switch to runlevel %d\n", runlevel)
   Runlevel = runlevel
   for id, entry in pairs(active_entries) do
     if type(id) == "string" then
