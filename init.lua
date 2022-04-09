@@ -16,6 +16,8 @@ local function printf(fmt, ...)
   syscall("write", 1, string.format(fmt, ...))
 end
 
+printf("init: Reknit is starting\n")
+
 --- Execute a command
 ---@param cmd string
 ---@return integer
