@@ -16,6 +16,11 @@ local function printf(fmt, ...)
   syscall("write", 1, string.format(fmt, ...))
 end
 
+if syscall("getpid") ~= 1 then
+  printf("Reknit must be run as process 1\n")
+  syscall("exit", 1)
+end
+
 printf("init: Reknit is starting\n")
 
 --- Execute a command
