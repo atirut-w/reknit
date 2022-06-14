@@ -6,7 +6,7 @@
 ---@vararg any
 local function syscall(call, ...)
   local result, err = coroutine.yield("syscall", call, ...)
-  if type(err) == "string" then error(err) end
+  if not result and err then error(err) end
   return result, err
 end
 
@@ -29,9 +29,9 @@ printf("init: Reknit is starting\n")
 local function exec(cmd)
   local pid, errno = syscall("fork", function()
     local _, errno = syscall("execve", "/bin/sh.lua", {
-      "/bin/sh.lua",
       "-c",
-      cmd
+      cmd,
+      [0] = "init-sh"
     })
     if errno then
       printf("init: execve failed: %d\n", errno)
@@ -203,7 +203,7 @@ local function switch_runlevel(runlevel)
     end
   end
 
-  for i, entry in pairs(init_table) do
+  for _, entry in pairs(init_table) do
     if entry.runlevels[runlevel] then
       start_service(entry)
     end
@@ -227,22 +227,25 @@ if not evt then
 end
 
 while true do
-  local sig, id, req, a = coroutine.yield()
+  local sig, id, req, a = coroutine.yield(0.5)
 
-  if sig == "process_exit" and respawn_entries[id] then
-    local entry = respawn_entries[id]
+  local pid = syscall("waitany")
+  if pid and respawn_entries[pid] then
+    local entry = respawn_entries[pid]
 
-    respawn_entries[id] = nil
-    active_entries[id] = nil
+    respawn_entries[pid] = nil
+    active_entries[pid] = nil
 
-    local pid, errno = exec(entry.command)
-    if not pid then
+    local npid, errno = exec(entry.command)
+    if not npid then
       printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
     else
-      active_entries[pid] = entry
-      respawn_entries[pid] = entry
+      active_entries[npid] = entry
+      respawn_entries[npid] = entry
     end
-  elseif sig == "telinit" then
+  end
+
+  if sig == "telinit" then
     if type(id) ~= "number" then
       printf("init: Cannot respond to non-numeric PID %s\n", tostring(id))
     elseif not syscall("kill", id, "SIGEXIST") then
