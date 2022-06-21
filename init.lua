@@ -6,7 +6,7 @@
 ---@vararg any
 local function syscall(call, ...)
   local result, err = coroutine.yield("syscall", call, ...)
-  if not result and err then error(err) end
+  if not result and err then error(call..": "..err) end
   return result, err
 end
 
