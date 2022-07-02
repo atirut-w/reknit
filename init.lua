@@ -36,19 +36,23 @@ local function exec(cmd, tty)
       end
       syscall("close", fd)
     end
+
     local _, errno = syscall("execve", "/bin/sh.lua", {
       "-c",
       cmd,
       [0] = "[init_worker]"
     })
+
     if errno then
       printf("init: execve failed: %d\n", errno)
       syscall("exit", 1)
     end
   end)
+
   if not pid then
     printf("init: fork failed: %d\n", errno)
     return nil, errno
+
   else
     return pid
   end
@@ -170,10 +174,13 @@ local function start_service(entry)
   if not pid then
     printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
     return nil, errno
+
   elseif entry.action == "once" then
     active_entries[pid] = entry
+
   elseif entry.action == "wait" then
     syscall("wait", pid)
+
   elseif entry.action == "respawn" then
     respawn_entries[pid] = entry
   end
@@ -252,24 +259,21 @@ local function check_gettys()
 
   syscall("close", fd)
 
-  table.sort(ttys, function(a, b)
-    return (tonumber((a:match("tty(%d+)"))) or 0) <
-      (tonumber((b:match("tty(%d+)"))) or 0)
-  end)
-
   for i=1, #ttys, 1 do
+    local name = ttys[i]
+
     local exists = false
     for _, v in pairs(gettys) do
-      if v == ttys[i] then
+      if v == name then
         exists = true
         break
       end
     end
 
     if not exists then
-      local pid = exec("/bin/login.lua", ttys[i])
+      local pid = exec("/bin/login.lua", name)
       if pid then
-        gettys[pid] = ttys[i]
+        gettys[pid] = name
       end
     end
   end
@@ -300,42 +304,54 @@ while true do
   if sig == "telinit" then
     if type(id) ~= "number" then
       printf("init: Cannot respond to non-numeric PID %s\n", tostring(id))
+
     elseif not syscall("kill", id, "SIGEXIST") then
       printf("init: Cannot respond to nonexistent process %d\n", id)
+
     elseif type(req) ~= "string" or not valid_actions[req] then
       printf("init: Got bad telinit %s\n", tostring(req))
+
     else
       if req == "runlevel" and arg and type(arg) ~= "number" then
         printf("init: Got bad runlevel argument %s\n", tostring(arg))
+
       elseif req ~= "runlevel" and type(arg) ~= "string" then
         printf("init: Got bad %s argument %s\n", req, tostring(arg))
+
       else
         telinit[#telinit+1] = {req = req, from = id, arg = a}
+
       end
     end
   end
 
   if #telinit > 0 then
     local request = table.remove(telinit, 1)
+
     if request == "runlevel" then
       if not request.arg then
         syscall("ioctl", evt, "send", request.from, "response", "runlevel",
           Runlevel)
+
       elseif request.arg ~= Runlevel then
         switch_runlevel(request.arg)
         syscall("ioctl", evt, "send", request.from, "response", "runlevel",
           true)
+
       end
+
     elseif request == "start" then
       if active_entries[request.arg] then
         syscall("ioctl", evt, "send", request.from, "response", "start",
           start_service(active_entries[request.arg]))
       end
+
     elseif request == "stop" then
       if active_entries[request.arg] then
         syscall("ioctl", evt, "send", request.from, "response", "stop",
           stop_service(active_entries[request.arg]))
       end
+
     end
   end
 end
