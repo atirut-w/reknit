@@ -31,9 +31,11 @@ local function exec(cmd, tty)
     if tty then
       local fd, err = syscall("open", "/dev/"..tty, "rw")
       if not fd then syscall("exit", err) end
+
       for i=0, 2, 1 do
         syscall("dup2", fd, i)
       end
+
       syscall("close", fd)
     end
 
@@ -64,6 +66,7 @@ local function exec_script(file)
   local okay, emsg
   if dofile then
     pcall(dofile, file)
+
   else
     local fd, err = syscall("open", file, "r")
     if not fd then
@@ -78,6 +81,7 @@ local function exec_script(file)
     if not ok then
       printf("Load failed - %s\n", lerr)
       return
+
     else
       okay, emsg = pcall(ok)
     end
@@ -93,7 +97,7 @@ end
 
 -- Load /lib/package.lua - because where else do you do it?
 -- Environments propagate to process children in certain
--- Cynosure configurations, and this is the only real way to
+-- Cynosure 2 configurations, and this is the only real way to
 -- ensure that every process has access to the 'package' library.
 --
 -- This may change in the future.
@@ -118,6 +122,7 @@ local function load_inittab()
     ))
     return
   end
+
   local inittab = syscall("read", fd, "a")
   syscall("close", fd)
 
@@ -132,6 +137,7 @@ local function load_inittab()
       local id, runlevels, action, command = line:match("^([^:]+):([^:]+):([^:]+):(.+)$")
       if not id then
         printf("Bad init entry on line %d\n", line)
+
       else
         local entry = {
           id = id,
@@ -139,9 +145,11 @@ local function load_inittab()
           action = action,
           command = command,
         }
+
         for runlevel in runlevels:gmatch("%d") do
           entry.runlevels[tonumber(runlevel)] = true
         end
+
         entry.index = #init_table + 1
         init_table[#init_table + 1] = entry
         init_table[entry.id] = entry -- for 'start' and 'stop'
@@ -210,6 +218,7 @@ end
 local function switch_runlevel(runlevel)
   printf("init: Switch to runlevel %d\n", runlevel)
   Runlevel = runlevel
+
   for id, entry in pairs(active_entries) do
     if type(id) == "string" then
       if not entry.runlevels[runlevel] then
@@ -295,6 +304,7 @@ while true do
     local npid, errno = exec(entry.command)
     if not npid then
       printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
+
     else
       active_entries[npid] = entry
       respawn_entries[npid] = entry
@@ -320,7 +330,6 @@ while true do
 
       else
         telinit[#telinit+1] = {req = req, from = id, arg = a}
-
       end
     end
   end
@@ -337,7 +346,6 @@ while true do
         switch_runlevel(request.arg)
         syscall("ioctl", evt, "send", request.from, "response", "runlevel",
           true)
-
       end
 
     elseif request == "start" then
@@ -351,7 +359,6 @@ while true do
         syscall("ioctl", evt, "send", request.from, "response", "stop",
           stop_service(active_entries[request.arg]))
       end
-
     end
   end
 end
