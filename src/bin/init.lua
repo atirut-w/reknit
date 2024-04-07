@@ -251,51 +251,10 @@ if not evt then
     err, "telinit responses will not work\27[m\n")
 end
 
-local gettys = {}
-local function check_gettys()
-  local fd, derr = syscall("opendir", "/dev")
-  if not fd then
-    printf("init: \27[91mERROR: Failed to open /dev (%d)\27[m\n", derr)
-    syscall("exit", 1)
-  end
-
-  local ttys = {}
-  repeat
-    local dent = syscall("readdir", fd)
-    if dent and dent.name:sub(1,3) == "tty" then
-      ttys[#ttys+1] = dent.name
-    end
-  until not dent
-
-  syscall("close", fd)
-
-  for i=1, #ttys, 1 do
-    local name = ttys[i]
-
-    local exists = false
-    for _, v in pairs(gettys) do
-      if v == name then
-        exists = true
-        break
-      end
-    end
-
-    if not exists then
-      local pid = exec("/bin/login.lua", name)
-      if pid then
-        gettys[pid] = name
-      end
-    end
-  end
-end
-
 while true do
-  check_gettys()
-
   local sig, id, req, a = coroutine.yield(0.5)
 
   local pid = syscall("waitany")
-  if pid and gettys[pid] then gettys[pid] = nil end
   if pid and respawn_entries[pid] then
     local entry = respawn_entries[pid]
 
