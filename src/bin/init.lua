@@ -203,6 +203,7 @@ end
 ---@param entry InitEntry
 local function stop_service(entry)
   local pid = active_entries[entry.id]
+  printf("init: Stopping '%s'\n", entry.id)
   if pid then
     if syscall("kill", pid, "SIGTERM") then
       active_entries[pid] = nil
@@ -220,7 +221,7 @@ local function switch_runlevel(runlevel)
   Runlevel = runlevel
 
   for id, entry in pairs(active_entries) do
-    if type(id) == "string" then
+    if type(id) == "number" then
       if not entry.runlevels[runlevel] then
         stop_service(entry)
       end
@@ -320,6 +321,7 @@ while true do
 
     elseif type(req) ~= "string" or not valid_actions[req] then
       printf("init: Got bad telinit %s\n", tostring(req))
+      syscall("ioctl", evt, "send", id, "bad-signal", req)
 
     else
       if req == "runlevel" and arg and type(arg) ~= "number" then
@@ -337,7 +339,7 @@ while true do
   if #telinit > 0 then
     local request = table.remove(telinit, 1)
 
-    if request == "runlevel" then
+    if request.req == "runlevel" then
       if not request.arg then
         syscall("ioctl", evt, "send", request.from, "response", "runlevel",
           Runlevel)
@@ -348,13 +350,13 @@ while true do
           true)
       end
 
-    elseif request == "start" then
+    elseif request.req == "start" then
       if active_entries[request.arg] then
         syscall("ioctl", evt, "send", request.from, "response", "start",
           start_service(active_entries[request.arg]))
       end
 
-    elseif request == "stop" then
+    elseif request.req == "stop" then
       if active_entries[request.arg] then
         syscall("ioctl", evt, "send", request.from, "response", "stop",
           stop_service(active_entries[request.arg]))
