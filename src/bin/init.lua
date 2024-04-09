@@ -212,14 +212,15 @@ else
 end
 
 while true do
-  local sig, id, req, a = coroutine.yield(0.5)
-  local pid = syscall("waitany")
-
   local should_rescan_inittab, newRunlevel = false, currentRunlevel
 
-  if pid then
-    should_rescan_inittab = true
-  end
+  local sig, id, req, a = coroutine.yield(0.5)
+  repeat
+    local pid = syscall("waitany")
+    if pid then
+      should_rescan_inittab = true
+    end
+  until not pid
 
   if kill_queue.time <= syscall("uptime") then
     for i=1, #kill_queue do
@@ -259,14 +260,12 @@ while true do
             should_rescan_inittab = true
             newRunlevel = request.arg or newRunlevel
             syscall("ioctl", evt, "send", request.from, "response", "runlevel",
-              true)
+              newRunlevel)
           end
 
-        elseif request.req == "rescan" then
-          if active_entries[request.arg] then
-            syscall("ioctl", evt, "send", request.from, "response", "stop",
-              stop_service(active_entries[request.arg]))
-          end
+        elseif req == "rescan" then
+          should_rescan_inittab = true
+          syscall("ioctl", evt, "send", request.from, "response", "rescan", true)
         end
       end
     end
