@@ -1,17 +1,11 @@
 --!lua
--- System V-style init
+-- SysV-style init, mk2
 
---- Perform a system call
----@param call string
----@vararg any
 local function syscall(call, ...)
   local result, err = coroutine.yield("syscall", call, ...)
-  if not result and err then error(call..": "..err) end
   return result, err
 end
 
----@param fmt string
----@vararg any
 local function printf(fmt, ...)
   syscall("write", 1, string.format(fmt, ...))
 end
@@ -23,36 +17,12 @@ end
 
 printf("init: Reknit is starting\n")
 
---- Execute a command
----@param cmd string
----@return integer
-local function exec(cmd, tty)
-  local pid, errno = syscall("fork", function()
-    if tty then
-      local fd, err = syscall("open", "/dev/"..tty, "rw")
-      if not fd then syscall("exit", err) end
-
-      for i=0, 2, 1 do
-        syscall("dup2", fd, i)
-      end
-
-      syscall("close", fd)
-    end
-
-    local _, errno = syscall("execve", "/bin/sh.lua", {
-      "-c",
-      cmd,
-      [0] = "[init_worker]"
-    })
-
-    if errno then
-      printf("init: execve failed: %d\n", errno)
-      syscall("exit", 1)
-    end
+local function exec_on(cmd, tty)
+  local pid, err = syscall("fork", function()
   end)
 
   if not pid then
-    printf("init: fork failed: %d\n", errno)
+    printf("init: fork failed (%d)\n", errno)
     return nil, errno
 
   else
@@ -60,215 +30,203 @@ local function exec(cmd, tty)
   end
 end
 
--- Load a script and execute it with Reknit's environment.
--- Only used internally, mostly for security reasons.
+local function readfile(file)
+  local fd, err = syscall("open", file, "r")
+  if not fd then
+    printf("init: Could not open %s: %d\n", (err == 2 and "No such file or directory") or tostring(errno))
+    return nil, err
+  end
+
+  local data = syscall("read", fd, "a")
+  syscall("close", fd)
+
+  return data
+end
+
 local function exec_script(file)
-  local okay, emsg
+  local pok, perr
   if dofile then
-    pcall(dofile, file)
+    pok, perr = pcall(dofile, file)
 
   else
-    local fd, err = syscall("open", file, "r")
-    if not fd then
-      printf("open '%s' failed: %d\n", file, err)
+    local data, err = readfile(file)
+    if not data then
       return nil, err
     end
 
-    local data = syscall("read", fd, "a")
-    syscall("close", fd)
-
-    local ok, lerr = load(data, "="..file, "t", _G)
+    local ok, err = load(data, "="..file, "t", _G)
     if not ok then
-      printf("Load failed - %s\n", lerr)
+      printf("init: load() failed - %s\n", err)
       return
-
-    else
-      okay, emsg = pcall(ok)
     end
+
+    pok, perr = pcall(ok)
   end
 
-  if not okay and emsg then
-    printf("Execution failed - %s\n", emsg)
+  if not pok and perr then
+    printf("init: ok() failed - %s\n", perr)
     return
   end
 
   return true
 end
 
--- Load /lib/package.lua - because where else do you do it?
--- Environments propagate to process children in certain
--- Cynosure 2 configurations, and this is the only real way to
--- ensure that every process has access to the 'package' library.
---
--- This may change in the future.
+-- Load /lib/package.lua
 assert(exec_script("/lib/package.lua"))
 
----@class InitEntry
----@field id string
----@field runlevels boolean[]
----@field action string
----@field command string
+local validRunlevels = "[0123456789abcABCsS]"
+local currentRunlevel = "s"
+local monitor = {}
+local kill_queue = {time = 0}
 
----@type InitEntry[]
-local init_table = {}
+local function read_inittab()
+  local inittab = {}
+  local data, err = readfile("/etc/inittab")
 
---- Load `/etc/inittab`
-local function load_inittab()
-  local fd, errno = syscall("open", "/etc/inittab", "r")
-  if not fd then
-    printf("Could not open /etc/inittab: %s\n", (
-      (errno == 2 and "No such file or directory") or
-      tostring(errno)
-    ))
-    return
-  end
+  if not data then return inittab end
 
-  local inittab = syscall("read", fd, "a")
-  syscall("close", fd)
+  local ln = 0
+  for line in data:gmatch("[^\r\n]+") do
+    ln = ln + 1
+    if line:sub(1,1) ~= "#" then -- ignore comments
+      local id, runlevels, action, process = line:match("^([^:]+):([abcABC1234567890Ss]*):([^:]+):(.*)$")
 
-  init_table = {}
-
-  for line in inittab:gmatch("[^\r\n]+") do
-    if line:sub(1,1) == ":" then
-      -- Comment
-    elseif line == "" then
-      -- Empty line
-    else
-      local id, runlevels, action, command = line:match("^([^:]+):([^:]+):([^:]+):(.+)$")
       if not id then
-        printf("Bad init entry on line %d\n", line)
+        printf("init: Bad init entry on line %d\n", ln)
+      end
 
+      local entry = {id = id, runlevels = {}, action = action, process = process}
+      for rl in runlevels:gmatch("%d") do
+        entry.runlevels[tonumber(rl) or rl] = true
+      end
+
+      if entry.action == "initdefault" then
+        inittab.default = runlevels:sub(1,1)
+        inittab.default = tonumber(inittab.default) or inittab.default
       else
-        local entry = {
-          id = id,
-          runlevels = {},
-          action = action,
-          command = command,
-        }
-
-        for runlevel in runlevels:gmatch("%d") do
-          entry.runlevels[tonumber(runlevel)] = true
-        end
-
-        entry.index = #init_table + 1
-        init_table[#init_table + 1] = entry
-        init_table[entry.id] = entry -- for 'start' and 'stop'
+        inittab[#inittab+1] = entry
       end
     end
   end
+
+  return inittab
 end
 
-load_inittab()
-
---- List of active init entries with their PID as key
----@type InitEntry[]
-local active_entries = {}
---- List of init entries to watch for respawn
----@type InitEntry[]
-local respawn_entries = {}
---- A buffer of IPC entries, in case a lot of them get sent at once.
----@type integer[]
-local telinit = {}
-
-local Runlevel = -1
-
---- Start a service described by that entry
----@param entry InitEntry
-local function start_service(entry)
-  if active_entries[entry.id] then return true end
-  printf("init: Starting '%s'\n", entry.id)
-  local pid, errno = exec(entry.command)
+local function exec(cmd)
+  local pid, err = syscall("fork", function()
+    local _, errno = syscall("execve", "/bin/sh.lua", {
+      "-c", cmd, [0] = "[init_worker]"
+    })
+    if errno then
+      printf("init: execve failed (%d)\n", errno)
+      syscall("exit", 1)
+    end
+  end)
 
   if not pid then
-    printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
-    return nil, errno
-
-  elseif entry.action == "once" then
-    active_entries[pid] = entry
-
-  elseif entry.action == "wait" then
-    syscall("wait", pid)
-
-  elseif entry.action == "respawn" then
-    respawn_entries[pid] = entry
+    printf("init: fork failed (%d)\n", err)
+    return nil, err
   end
 
-  -- for 'stop'
-  active_entries[entry.id] = pid
-
-  return true
+  return pid
 end
 
---- Stop a service described by that entry
----@param entry InitEntry
-local function stop_service(entry)
-  local pid = active_entries[entry.id]
-  printf("init: Stopping '%s'\n", entry.id)
-  if pid then
-    if syscall("kill", pid, "SIGTERM") then
-      active_entries[pid] = nil
-      respawn_entries[pid] = nil
-      active_entries[entry.id] = nil
-      return true
-    end
-  end
-end
-
---- Switch to a new runlevel
----@param runlevel integer
-local function switch_runlevel(runlevel)
-  printf("init: Switch to runlevel %d\n", runlevel)
-  Runlevel = runlevel
-
-  for id, entry in pairs(active_entries) do
-    if type(id) == "number" then
-      if not entry.runlevels[runlevel] then
-        stop_service(entry)
-      end
-    end
-  end
-
-  for _, entry in pairs(init_table) do
+local function process_runlevel(inittab, runlevel)
+  local defined = {}
+  for i=1, #inittab do
+    local entry = inittab[i]
     if entry.runlevels[runlevel] then
-      start_service(entry)
+      -- TODO ondemand runlevels?
+      if entry.action == "once" and runlevel ~= currentRunlevel then
+        monitor[entry.id] = exec(entry.process)
+
+      elseif entry.action == "wait" and runlevel ~= currentRunlevel then
+        local pid = exec(entry.process)
+        if pid then
+          syscall("wait", pid)
+        end
+
+      elseif entry.action == "respawn" then
+        if (not monitor[entry.id]) or (not syscall("kill", monitor[entry.id], "SIGEXIST")) then
+          monitor[entry.id] = exec(entry.process)
+        end
+      end
+
+    elseif monitor[entry.id] then
+      syscall("kill", monitor[entry.id], "SIGTERM")
+      kill_queue[#kill_queue+1] = monitor[entry.id]
+      kill_queue.time = syscall("uptime") + 3
+      monitor[entry.id] = nil
+    end
+  end
+
+  currentRunlevel = runlevel
+end
+
+local inittab = read_inittab()
+
+-- pass 1: execute all sysinit scripts
+for i=1, #inittab do
+  if inittab[i].action == "sysinit" then
+    -- AIX 7.1 waits for sysinit entries.
+    local pid = exec(entry.process)
+    if pid then
+      syscall("wait", pid)
     end
   end
 end
 
-switch_runlevel(1) -- Single user mode
+-- pass 2: execute boot scripts
+for i=1, #inittab do
+  if inittab[i].action == "boot" then
+    exec(inittab[i].process)
+  elseif inittab[i].action == "bootwait" then
+    local pid = exec(inittab[i].process)
+    if pid then
+      syscall("wait", pid)
+    end
+  end
+end
 
-local valid_actions = {
-  runlevel = true,
-  start = true,
-  stop = true,
-  status = true,
-}
+-- wait for all the boot processes to settle
+repeat local pid = syscall("waitany") until not pid
 
-local evt, err = syscall("open", "/proc/events", "rw")
-if not evt then
-  -- The weird formatting here is so it'll fit into 80 character lines.
-  printf("init: \27[91mWARNING: Failed to open /proc/events (%d) - %s",
-    err, "telinit responses will not work\27[m\n")
+-- pass 3: enter default runlevel
+if not inittab.default then
+  currentRunlevel = nil
+  repeat
+    printf("init: Runlevel? ")
+    local input = syscall("read", 0, "l")
+    if input:match(validRunlevels) then
+      currentRunlevel = input:sub(1,1)
+      currentRunlevel = tonumber(currentRunlevel) or currentRunlevel
+    end
+  until currentRunlevel
+
+  local to_enter = currentRunlevel
+  currentRunlevel = -1
+  process_runlevel(inittab, to_enter)
+else
+  currentRunlevel = -1
+  process_runlevel(inittab, inittab.default)
 end
 
 while true do
   local sig, id, req, a = coroutine.yield(0.5)
-
   local pid = syscall("waitany")
-  if pid and respawn_entries[pid] then
-    local entry = respawn_entries[pid]
 
-    respawn_entries[pid] = nil
-    active_entries[pid] = nil
+  local should_rescan_inittab, newRunlevel = false, currentRunlevel
 
-    local npid, errno = exec(entry.command)
-    if not npid then
-      printf("init: Could not fork for entry %s: %d\n", entry.id, errno)
+  if pid then
+    should_rescan_inittab = true
+  end
 
-    else
-      active_entries[npid] = entry
-      respawn_entries[npid] = entry
+  if kill_queue.time <= syscall("uptime") then
+    for i=1, #kill_queue do
+      signal("kill", kill_queue[i], "SIGKILL")
+      kill_queue[i] = nil
     end
+    kill_queue.time = math.huge
   end
 
   if sig == "telinit" then
@@ -285,41 +243,37 @@ while true do
     else
       if req == "runlevel" and arg and type(arg) ~= "number" then
         printf("init: Got bad runlevel argument %s\n", tostring(arg))
+        syscall("ioctl", evt, "send", id, "bad-signal", req)
 
       elseif req ~= "runlevel" and type(arg) ~= "string" then
         printf("init: Got bad %s argument %s\n", req, tostring(arg))
+        syscall("ioctl", evt, "send", id, "bad-signal", req)
 
       else
-        telinit[#telinit+1] = {req = req, from = id, arg = a}
+        if req == "runlevel" then
+          if not request.arg then
+            syscall("ioctl", evt, "send", request.from, "response", "runlevel",
+              currentRunlevel)
+
+          elseif request.arg ~= currentRunlevel then
+            should_rescan_inittab = true
+            newRunlevel = request.arg or newRunlevel
+            syscall("ioctl", evt, "send", request.from, "response", "runlevel",
+              true)
+          end
+
+        elseif request.req == "rescan" then
+          if active_entries[request.arg] then
+            syscall("ioctl", evt, "send", request.from, "response", "stop",
+              stop_service(active_entries[request.arg]))
+          end
+        end
       end
     end
   end
 
-  if #telinit > 0 then
-    local request = table.remove(telinit, 1)
-
-    if request.req == "runlevel" then
-      if not request.arg then
-        syscall("ioctl", evt, "send", request.from, "response", "runlevel",
-          Runlevel)
-
-      elseif request.arg ~= Runlevel then
-        switch_runlevel(request.arg)
-        syscall("ioctl", evt, "send", request.from, "response", "runlevel",
-          true)
-      end
-
-    elseif request.req == "start" then
-      if active_entries[request.arg] then
-        syscall("ioctl", evt, "send", request.from, "response", "start",
-          start_service(active_entries[request.arg]))
-      end
-
-    elseif request.req == "stop" then
-      if active_entries[request.arg] then
-        syscall("ioctl", evt, "send", request.from, "response", "stop",
-          stop_service(active_entries[request.arg]))
-      end
-    end
+  if should_rescan_inittab then
+    inittab = read_inittab()
+    process_runlevel(inittab, newRunlevel)
   end
 end
