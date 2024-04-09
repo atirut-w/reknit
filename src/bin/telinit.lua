@@ -11,10 +11,8 @@ usage: telinit MESSAGE [ARGUMENT]
 Tell Reknit to do something.  Valid MESSAGEs are:
   runlevel [LEVEL]
     Either request or set the current runlevel.
-  start NAME
-    Start a service.
-  stop NAME
-    Stop a service.
+  rescan
+    Rescan /etc/inittab.
 
 Copyright (c) 2024 ULOS Developers under the GNU GPLv3.
 ]])
