@@ -34,7 +34,7 @@ local function readfile(file)
   local fd, err = syscall("open", file, "r")
   if not fd then
     printf("%q / %q\n", fd, err)
-    printf("init: Could not open %s: %d\n", file, (err == 2 and "No such file or directory") or tostring(err))
+    printf("init: Could not open %s: %s\n", file, (err == 2 and "No such file or directory") or tostring(err))
     return nil, err
   end
 
